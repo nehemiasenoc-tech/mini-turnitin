@@ -1,0 +1,51 @@
+============================================================
+INFORME DETALLADO DEL PROYECTO: MINI TURNITIN
+============================================================
+
+1. OBJETIVO DEL PROYECTO
+Desarrollar una herramienta local y eficiente para la detección de plagio 
+y contenido generado por IA, priorizando la privacidad de los datos y 
+el rendimiento sin dependencia de APIs pagas.
+
+2. ARQUITECTURA DEL SISTEMA
+El proyecto sigue una estructura modular en Python, dividida en:
+
+   - Preprocesamiento (src/preprocess.py): Extracción de texto multiformato 
+     (PDF/DOCX) y segmentación avanzada mediante spaCy (modelo 'es_core_news_sm').
+   - Análisis Léxico (src/lexical.py): Comparación de huellas dactilares 
+     de texto basadas en palabras clave y términos únicos.
+   - Análisis Semántico (src/semantic.py): El núcleo inteligente. Utiliza 
+     embeddings vectoriales y búsqueda aproximada de vecinos.
+   - Detector de IA (src/detector_ia.py): Motor de análisis lingüístico 
+     heurístico que evalúa patrones de escritura.
+   - Gestión de Corpus (src/corpus.py): Indexación dinámica de documentos locales.
+   - Configuración (src/config.py): Centralización de umbrales y pesos.
+
+3. TECNOLOGÍAS CLAVE
+   - Streamlit: Interfaz de usuario reactiva.
+   - FAISS (Facebook AI Similarity Search): Búsqueda vectorial ultrarrápida.
+   - Sentence-Transformers: Modelos MiniLM para representaciones semánticas.
+   - Scikit-learn: Implementación de TF-IDF para similitud léxica.
+   - PyMuPDF y python-docx: Motores de extracción de documentos.
+
+4. CAPAS DE DETECCIÓN
+   A. Similitud Léxica: Utiliza TF-IDF y similitud de coseno para detectar 
+      coincidencias literales o ligeras variaciones de palabras.
+   B. Similitud Semántica: Detecta el plagio de ideas mediante Bi-Encoders 
+      y refina los resultados con un Cross-Encoder (Re-ranker) para 
+      identificar parafraseo complejo.
+   C. Detección de IA: Analiza tres métricas fundamentales:
+      - Burstiness (Variación de la longitud de oraciones).
+      - TTR (Riqueza de vocabulario).
+      - Entropía (Predictibilidad de las palabras).
+
+5. COMPONENTES DE SEGURIDAD Y PRECISIÓN
+El sistema utiliza un proceso de "re-ranking". Primero, FAISS selecciona 
+candidatos rápidos (Bi-Encoder) y luego el Cross-Encoder actúa como un 
+juez final de alta precisión, minimizando los falsos positivos.
+
+6. CONCLUSIÓN TÉCNICA
+Mini Turnitin es un sistema robusto de procesamiento de lenguaje natural 
+que combina técnicas clásicas de recuperación de información con modelos 
+modernos de Deep Learning, optimizado para ejecutarse en entornos locales.
+============================================================

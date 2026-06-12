@@ -1,15 +1,16 @@
-def calculate_lexical_similarity(tokens1: list[str], tokens2: list[str]) -> float:
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+def calculate_lexical_similarity(text1: str, text2: str) -> float:
     """
-    Calcula la similitud léxica básica entre dos listas de tokens.
-    Por ejemplo, usando la similitud de Jaccard.
+    Calcula la similitud usando TF-IDF y Coseno, que es más preciso que Jaccard.
     """
-    set1 = set(tokens1)
-    set2 = set(tokens2)
-    
-    if not set1 and not set2:
+    if not text1.strip() or not text2.strip():
         return 0.0
-        
-    intersection = set1.intersection(set2)
-    union = set1.union(set2)
     
-    return len(intersection) / len(union) * 100
+    vectorizer = TfidfVectorizer()
+    try:
+        tfidf = vectorizer.fit_transform([text1, text2])
+        return float(cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0] * 100)
+    except:
+        return 0.0

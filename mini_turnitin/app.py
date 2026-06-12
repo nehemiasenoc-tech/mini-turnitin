@@ -1,21 +1,13 @@
 import streamlit as st
 import os
-import asyncio
 import sys
-from dotenv import load_dotenv, set_key
 
-# Cargar variables de entorno (como el API Key guardado)
-env_path = os.path.join(os.getcwd(), '.env')
-load_dotenv(env_path)
-
-# Solución al bug de asyncio en Windows
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-from src.preprocess import extract_and_clean_text_from_pdf, extract_sentences_from_pdf, get_pdf_text
+from src.preprocess import clean_text, extract_sentences_from_text, get_pdf_text, get_docx_text, create_chunks
 from src.corpus import load_corpus
 from src.lexical import calculate_lexical_similarity
 from src.semantic import build_faiss_index, find_suspicious_fragments
-from src.detector_ia import evaluate_paraphrasing
+from src.detector_ia import detect_ai_writing
+from src.report import generate_pdf_report
 
 @st.cache_data(show_spinner="Cargando documentos base (Corpus)...")
 def get_corpus_data():
@@ -30,17 +22,6 @@ def get_faiss_index(_corpus_data):
 def main():
     st.set_page_config(page_title="Mini Turnitin", layout="wide")
     
-    # Barra lateral mejorada con ícono y guardado persistente
-    with st.sidebar.expander("⚙️ Configuración de IA", expanded=True):
-        saved_key = os.environ.get("GEMINI_API_KEY", "")
-        api_key = st.text_input("🔑 Gemini API Key", type="password", value=saved_key, help="Obtén tu API Key gratis en aistudio.google.com")
-        
-        if st.button("💾 Guardar Clave"):
-            if api_key:
-                set_key(env_path, "GEMINI_API_KEY", api_key)
-                st.success("¡Guardada en archivo .env local!")
-            else:
-                st.warning("Ingresa una clave primero.")
     
     st.title("Mini Turnitin - Detector de Plagio")
     
@@ -49,23 +30,30 @@ def main():
     
     with tab1:
         st.header("Analizador de Documentos")
-        uploaded_file = st.file_uploader("Sube un archivo PDF a analizar", type="pdf")
+        uploaded_file = st.file_uploader("Sube un archivo a analizar", type=["pdf", "docx"])
         
         if uploaded_file is not None:
             max_lexical_sim = 0.0
             semantic_sim = 0.0
             most_similar_doc = "N/A"
-            veredicto = ""
-            modelo_usado = ""
+            ai_report = {}
+            suspicious_fragments = [] # FIX: Inicialización para evitar UnboundLocalError
             
             with st.spinner("Analizando documento..."):
                 try:
-                    pdf_bytes = uploaded_file.read()
+                    file_bytes = uploaded_file.read()
                     
-                    # Preprocesamiento
-                    raw_text = get_pdf_text(pdf_bytes)
-                    tokens = extract_and_clean_text_from_pdf(pdf_bytes)
-                    query_sentences = extract_sentences_from_pdf(pdf_bytes)
+                    # PIPELINE: Extracción única
+                    if uploaded_file.name.endswith(".pdf"):
+                        raw_text = get_pdf_text(file_bytes)
+                    else:
+                        raw_text = get_docx_text(file_bytes)
+                    
+                    # Procesamiento Spacy una sola vez indirectamente
+                    tokens = clean_text(raw_text)
+                    query_sentences = extract_sentences_from_text(raw_text)
+                    # CHUNKING: Agrupamos para el análisis semántico
+                    query_chunks = create_chunks(query_sentences, chunk_size=3)
                     
                     # Carga de base de datos e índices
                     corpus_data = get_corpus_data()
@@ -73,61 +61,106 @@ def main():
                     
                     # --- ANÁLISIS LÉXICO ---
                     for doc_name, doc_info in corpus_data.items():
-                        sim = calculate_lexical_similarity(tokens, doc_info['tokens'])
+                        # FIX: Pasamos el texto unido como string, no la lista de tokens
+                        corpus_full_text = " ".join(doc_info['tokens'])
+                        sim = calculate_lexical_similarity(" ".join(tokens), corpus_full_text)
                         if sim > max_lexical_sim:
                             max_lexical_sim = sim
                             most_similar_doc = doc_name
                     
                     # --- ANÁLISIS SEMÁNTICO (FAISS) ---
-                    suspicious_fragments, semantic_sim = find_suspicious_fragments(query_sentences, index, corpus_sentences)
+                    # Usamos los chunks en lugar de oraciones sueltas
+                    suspicious_fragments, semantic_sim = find_suspicious_fragments(query_chunks, index, corpus_sentences)
                     
-                    # --- AGENTE IA (GEMINI) ---
-                    if suspicious_fragments:
-                        with st.spinner("Consultando a Gemini para evaluación de parafraseo..."):
-                            # Invocación asíncrona dentro del ciclo normal
-                            veredicto, modelo_usado = asyncio.run(evaluate_paraphrasing(raw_text, suspicious_fragments, api_key))
-                    else:
-                        veredicto = "✅ No se encontraron fragmentos con similitud semántica suficiente para requerir evaluación profunda."
-                        modelo_usado = "Ninguno"
+                    # --- DETECCIÓN DE ESCRITURA IA (LOCAL) ---
+                    with st.spinner("Analizando patrones de escritura..."):
+                        ai_report = detect_ai_writing(raw_text)
                     
-                    st.success(f"**Análisis completado:** {len(tokens)} tokens y {len(query_sentences)} oraciones procesadas.")
+                    st.success(f"**Análisis completado:** {len(tokens)} tokens y {len(query_chunks)} bloques de contexto analizados.")
                     
                 except Exception as e:
                     st.error(f"Ocurrió un error al procesar: {e}")
                 
             # --- DASHBOARD DE RESULTADOS ---
             st.header("Dashboard de Análisis")
-            col1, col2 = st.columns(2)
             
-            with col1:
+            # Fila de métricas principales
+            m1, m2, m3 = st.columns(3)
+            
+            with m1:
                 st.metric(
-                    label="Similitud Léxica (Máxima)", 
+                    label="Similitud Léxica", 
                     value=f"{max_lexical_sim:.1f}%",
-                    delta=f"Documento fuente: {most_similar_doc}" if max_lexical_sim > 0 else None,
-                    delta_color="inverse"
+                    help="Mide la coincidencia exacta de palabras (tokens)."
                 )
+                if max_lexical_sim > 0:
+                    st.caption(f"Fuente principal: **{most_similar_doc}**")
                 
-            with col2:
+            with m2:
                 st.metric(
-                    label="Similitud Semántica (Global)", 
+                    label="Similitud Semántica", 
                     value=f"{semantic_sim:.1f}%",
-                    delta="Basado en IA y FAISS" if semantic_sim > 0 else None,
-                    delta_color="inverse"
+                    help="Mide la coincidencia de ideas y significados mediante IA."
                 )
+
+            with m3:
+                score = ai_report.get("score", 0)
+                st.metric(label="Probabilidad de IA", value=f"{score}%")
+            
+            # Botón de Descarga de Reporte
+            report_pdf = generate_pdf_report(
+                uploaded_file.name,
+                max_lexical_sim,
+                semantic_sim,
+                ai_report,
+                suspicious_fragments
+            )
+            
+            st.download_button(
+                label="📥 Descargar Reporte Completo (PDF)",
+                data=report_pdf,
+                file_name=f"Reporte_{uploaded_file.name.split('.')[0]}.pdf",
+                mime="application/pdf"
+            )
+            st.divider()
+
+            # Sección de IA
+            col_ia_label, col_ia_metrics = st.columns([1, 2])
+            with col_ia_label:
+                st.subheader("Origen del Contenido")
+                color = "red" if score > 70 else "orange" if score > 40 else "green"
+                st.markdown(f"""
+                <div style="padding:20px; border-radius:10px; border: 2px solid {color}; text-align:center;">
+                    <h3 style="color:{color}; margin:0;">{ai_report.get('label', 'Desconocido')}</h3>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col_ia_metrics:
+                st.write("**Detalle de patrones lingüísticos:**")
+                c1, c2, c3 = st.columns(3)
+                c1.caption(f"Burstiness: {ai_report.get('burstiness',0):.2f}")
+                c2.caption(f"Riqueza (TTR): {ai_report.get('ttr',0):.2f}")
+                c3.caption(f"Entropía: {ai_report.get('entropy',0):.2f}")
+                st.progress(score / 100)
+
+            # --- DETALLE DE FRAGMENTOS ---
+            if suspicious_fragments:
+                st.subheader("🚩 Fragmentos Semánticos Detectados")
+                st.write("Se han encontrado oraciones con alta similitud de ideas en la base de datos:")
                 
-                st.subheader("Veredicto del Agente de IA (Parafraseo)")
-                if modelo_usado and modelo_usado != "Ninguno" and modelo_usado != "Error":
-                    st.caption(f"✨ **Analizado por IA:** `Modelo {modelo_usado}`")
-                st.info(veredicto)
-                
-                # Muestra de los fragmentos sospechosos si existen
-                if suspicious_fragments:
-                    with st.expander("Ver detalle de fragmentos semánticamente similares"):
-                        for idx, frag in enumerate(suspicious_fragments):
-                            st.write(f"**{idx+1}. Similitud:** {frag['score']:.2f}")
-                            st.write(f"👉 **Tu documento:** {frag['query']}")
-                            st.write(f"📄 **Corpus:** {frag['match']}")
-                            st.divider()
+                for idx, frag in enumerate(suspicious_fragments):
+                    sim_val = frag['score'] * 100
+                    card_color = "#ff4b4b" if sim_val > 85 else "#ffa500"
+                    
+                    with st.container(border=True):
+                        st.markdown(f"**Coincidencia #{idx+1}** - Nivel de Similitud: <span style='color:{card_color}; font-weight:bold;'>{sim_val:.1f}%</span>", unsafe_allow_html=True)
+                        col_doc, col_corpus = st.columns(2)
+                        with col_doc:
+                            st.caption("Texto en tu documento:")
+                            st.info(frag['query'])
+                        with col_corpus:
+                            st.caption("Coincidencia en base de datos:")
+                            st.success(frag['match'])
                         
     with tab2:
         st.header("Gestión de Documentos Base (Corpus)")

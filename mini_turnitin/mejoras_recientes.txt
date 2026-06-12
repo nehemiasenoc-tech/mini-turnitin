@@ -1,0 +1,51 @@
+============================================================
+REPORTE DE ACTUALIZACIONES Y MEJORAS RECIENTES
+============================================================
+
+Se han implementado cinco pilares fundamentales para elevar la 
+precisión y versatilidad del sistema:
+
+1. CHUNKING (FRAGMENTACIÓN DESLIZANTE)
+   - Mejora: Se implementó 'create_chunks' en el preprocesamiento.
+   - Impacto: En lugar de analizar oraciones aisladas (que carecen de contexto), 
+     el sistema ahora analiza bloques de 3 oraciones. Esto mejora drásticamente 
+     la calidad de los embeddings de FAISS.
+
+2. SOPORTE MULTIFORMATO (DOCX)
+   - Mejora: Integración de la librería 'python-docx'.
+   - Impacto: El sistema ya no se limita a PDFs; ahora acepta archivos de 
+     Microsoft Word, cubriendo el estándar académico más común.
+
+3. CROSS-ENCODER (RE-RANKER)
+   - Mejora: Integración del modelo 'cross-encoder/ms-marco-MiniLM-L-6-v2'.
+   - Impacto: Actúa como una segunda capa de verificación semántica. Valida 
+     los candidatos encontrados por FAISS, permitiendo distinguir entre 
+     coincidencias superficiales y parafraseo real intencional.
+
+4. EVOLUCIÓN A TF-IDF
+   - Mejora: Sustitución de la similitud de Jaccard por TF-IDF.
+   - Impacto: La comparación léxica ahora es "inteligente". Da más peso a las 
+     palabras raras y técnicas del documento, ignorando palabras comunes 
+     que no indican plagio.
+
+5. CENTRALIZACIÓN DE CONFIGURACIÓN (src/config.py)
+   - Mejora: Creación de un archivo maestro de umbrales.
+   - Impacto: Permite ajustar la sensibilidad de la IA y del plagio semántico 
+     sin tocar el código fuente, facilitando el "fine-tuning" del sistema.
+
+6. OPTIMIZACIÓN DEL PIPELINE
+   - Mejora: Extracción de texto centralizada. El archivo se lee una sola vez 
+     y el texto fluye hacia todos los módulos, mejorando la velocidad de análisis.
+
+7. MANEJO DE PALABRAS LARGAS EN PDF
+   - Mejora: Implementación de `_safe_multi_cell` y `break_long_words` en `src/report.py`.
+   - Impacto: Resuelve el error `FPDFException: Not enough horizontal space to render a single character`
+     al insertar espacios en palabras excesivamente largas, permitiendo que FPDF las divida
+     correctamente en el reporte PDF.
+
+8. COMPATIBILIDAD DE SALIDA PDF CON STREAMLIT
+   - Mejora: Conversión explícita de `bytearray` a `bytes` en la salida de `generate_pdf_report`
+     en `src/report.py`.
+   - Impacto: Soluciona el error `StreamlitAPIException: Invalid binary data format: <class 'bytearray'>`,
+     asegurando que el archivo PDF generado sea compatible con el botón de descarga de Streamlit.
+============================================================

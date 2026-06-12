@@ -1,43 +1,97 @@
-import asyncio
-import google.generativeai as genai
+import re
+import statistics
+import math
+from collections import Counter
+from src.preprocess import nlp # Importa el modelo spacy ya cargado
+from src.config import (
+    AI_BURSTINESS_CRITICAL, AI_BURSTINESS_LOW,
+    AI_TTR_CRITICAL, AI_TTR_LOW,
+    AI_ENTROPY_CRITICAL, AI_ENTROPY_LOW,
+    WEIGHT_BURSTINESS, WEIGHT_TTR, WEIGHT_ENTROPY
+)
 
-async def evaluate_paraphrasing(original_text: str, suspicious_fragments: list[dict], api_key: str = "") -> tuple[str, str]:
+def detect_ai_writing(text: str) -> dict:
     """
-    Evalúa si existe parafraseo complejo llamando al modelo de Gemini en tiempo real.
-    Retorna una tupla: (veredicto, nombre_del_modelo)
+    Detecta si el texto es probable que haya sido generado por IA mediante 
+    análisis de patrones lingüísticos (sin APIs externas).
     """
-    if not api_key:
-        return "⚠️ **(Requiere API Key):** Por favor, ingresa tu Gemini API Key en la barra lateral izquierda para que la IA emita un veredicto.", "Ninguno"
+    doc = nlp(text)
 
-    fragments_text = "\n".join([f"- Original: {f['match']}\n  Sospechoso: {f['query']} (Similitud Semántica: {f['score']:.2f})" for f in suspicious_fragments])
+    # 1. Segmentación de oraciones usando spaCy para mayor robustez
+    # Usamos los objetos 'span' de spacy para contar tokens reales
+    sentences = [sent for sent in doc.sents if len(sent.text.strip()) > 15]
     
-    prompt = f"""
-    Eres un experto en detección de plagio y parafraseo complejo.
-    Se te proporciona una muestra del texto de un documento subido y una lista de los fragmentos altamente sospechosos detectados mediante búsqueda semántica.
-    Evalúa detalladamente si existe parafraseo complejo, alteración intencional u ocultamiento de plagio.
-    Proporciona un veredicto estructurado y argumentado.
+    if len(sentences) < 3:
+        return {"score": 0, "label": "Texto demasiado corto", "burstiness": 0, "ttr": 0, "entropy": 0}
+
+    # 2. Cálculo de Burstiness (Variación en la longitud de oraciones)
+    # Contamos tokens que no sean puntuación para medir la estructura real
+    lengths = [len([t for t in sent if not t.is_punct]) for sent in sentences]
+    avg_len = statistics.mean(lengths)
+    # Usamos desviación estándar poblacional para evitar errores con pocas oraciones
+    std_dev = statistics.pstdev(lengths)
+    burstiness = std_dev / avg_len if avg_len > 0 else 0
+
+    # 3. Cálculo de Riqueza Léxica (Type-Token Ratio)
+    # La IA tiende a usar un vocabulario más "seguro" y repetitivo.
+    # Usamos lemas y filtramos stopwords/puntuación para una TTR más significativa.
+    words = []
+    for token in doc:
+        if not token.is_stop and not token.is_punct and not token.is_space:
+            words.append(token.lemma_.lower())
+
+    if not words:
+        return {"score": 0, "label": "Sin contenido", "burstiness": 0, "ttr": 0, "entropy": 0}
     
-    Texto Subido (Muestra inicial):
-    {original_text[:1500]} ...
+    ttr = len(set(words)) / len(words)
+
+    # 4. Cálculo de Entropía de Unigramas y Bigramas (Predictibilidad)
+    word_counts = Counter(words)
+    total_words = len(words)
+    uni_entropy = -sum((count/total_words) * math.log2(count/total_words) for count in word_counts.values())
+
+    # Bigramas para detectar patrones de transición (típicos de IA)
+    bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)]
+    if bigrams:
+        bigram_counts = Counter(bigrams)
+        total_bigrams = len(bigrams)
+        bi_entropy = -sum((count/total_bigrams) * math.log2(count/total_bigrams) for count in bigram_counts.values())
+        # Promediamos para obtener una entropía más representativa
+        entropy = (uni_entropy + bi_entropy) / 2
+    else:
+        entropy = uni_entropy
+
+    # 5. Lógica de Scoring Heurística Refinada
+    # Normalizamos cada métrica de 0 a 100 basado en los umbrales de config
+    def normalize_score(value, critical, low, reverse=False):
+        if reverse: # Para burstiness y TTR: menor valor -> más probable IA
+            if value <= critical: return 100
+            if value >= low: return 0
+            return (low - value) / (low - critical) * 100
+        else: # Para entropía: menor valor -> más probable IA
+            if value <= critical: return 100
+            if value >= low: return 0
+            return (low - value) / (low - critical) * 100
+
+    s_burst = normalize_score(burstiness, AI_BURSTINESS_CRITICAL, AI_BURSTINESS_LOW, reverse=True)
+    s_ttr = normalize_score(ttr, AI_TTR_CRITICAL, AI_TTR_LOW, reverse=True)
+    s_entropy = normalize_score(entropy, AI_ENTROPY_CRITICAL, AI_ENTROPY_LOW)
+
+    # Aplicamos pesos configurables
+    total_weight = WEIGHT_BURSTINESS + WEIGHT_TTR + WEIGHT_ENTROPY
+    ai_score = (s_burst * WEIGHT_BURSTINESS + s_ttr * WEIGHT_TTR + s_entropy * WEIGHT_ENTROPY) / total_weight
     
-    Fragmentos Altamente Sospechosos (comparados contra el corpus):
-    {fragments_text}
-    """
-    try:
-        genai.configure(api_key=api_key)
-        
-        # Búsqueda dinámica del modelo correcto para evitar errores 404
-        valid_model_name = "gemini-1.5-flash" # Fallback por defecto
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'flash' in m.name.lower():
-                    valid_model_name = m.name
-                    break
-                elif 'pro' in m.name.lower():
-                    valid_model_name = m.name
-                    
-        model = genai.GenerativeModel(valid_model_name)
-        response = await model.generate_content_async(prompt)
-        return response.text, valid_model_name
-    except Exception as e:
-        return f"❌ Error al contactar con Gemini: {str(e)}", "Error"
+    ai_score = min(ai_score, 100)
+    
+    label = "Humano"
+    if ai_score > 75: label = "Altamente probable IA"
+    elif ai_score > 45: label = "Posible contenido mixto/IA"
+    elif ai_score > 25: label = "Probablemente Humano (con baja variedad)"
+
+    return {
+        "score": ai_score,
+        "label": label,
+        "burstiness": burstiness,
+        "ttr": ttr,
+        "entropy": entropy
+    }
